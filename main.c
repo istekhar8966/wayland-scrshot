@@ -1,8 +1,12 @@
+#define _GNU_SOURCE
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -121,4 +125,79 @@ int main(void) {
     }
 
     free(buffer);
+
+    int mem_fd = memfd_create("memfd_buffer", 0);
+    int fd_buf_size = 1920 * 1080 * 4;
+
+    ftruncate(mem_fd, fd_buf_size);
+
+    void *pixels = mmap(NULL, fd_buf_size, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, 0);
+
+    if (pixels == MAP_FAILED) {
+        perror("mmap Failed!");
+        exit(1);
+    }
+
+    /*
+    packet_format!
+     *
+    [object_id] = 2
+    [opcode/size] = (size << 16) | opcode
+    [global_name]
+    [string_length]
+    [string bytes]
+    [padding]
+    [version]
+    [new_object_id]
+    *
+    */
+
+    void *packet_pointer = malloc(4096);
+    void *new_ptr = packet_pointer;
+
+    u32 object_id = 2;
+
+    memcpy(new_ptr, &object_id, sizeof(u32));
+    new_ptr += sizeof(u32);
+
+    u16 opcode = 0;
+    memcpy(new_ptr, &opcode, sizeof(u16));
+    new_ptr += sizeof(u16);
+
+    void *msg_size_ptr = new_ptr;
+    new_ptr += sizeof(u16);
+
+    u32 global_name = 5;
+    memcpy(new_ptr, &global_name, sizeof(u32));
+    new_ptr += sizeof(u32);
+
+    char *str = "wl_shm";
+    int str_size = strlen(str) + 1;
+
+    memcpy(new_ptr, &str_size, sizeof(u32));
+    new_ptr += sizeof(u32);
+
+    memcpy(new_ptr, str, str_size);
+    new_ptr += str_size;
+
+    u32 padding = a_round(str_size) - str_size;
+    new_ptr += padding;
+
+    u32 version = 2;
+    memcpy(new_ptr, &version, sizeof(u32));
+    new_ptr += sizeof(u32);
+
+    u32 new_object_id = 3;
+    memcpy(new_ptr, &new_object_id, sizeof(u32));
+    new_ptr += sizeof(u32);
+
+    u16 msg_size = (char *)new_ptr - (char *)packet_pointer;
+
+    memcpy(msg_size_ptr, &msg_size, sizeof(u16));
+
+    write(fd, packet_pointer, msg_size);
+
+    free(packet_pointer);
+
+    return 0;
 }
