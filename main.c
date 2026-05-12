@@ -29,16 +29,24 @@ typedef double f64;
 int round_4(int x);
 int create_shm_buf();
 int socket_connect();
-void get_registry(int fd);
-void bind_registry(int fd);
+void get_registry(int fd, int new_id);
+void bind_registry(int fd, u32 global_name, char *interface, u32 version, u32 new_id);
+void send_packet(int fd, u32 object_id, u16 opcode, u32 new_id);
 
 int main(void) {
+    int object_id = 1;
 
     int fd = socket_connect();
 
-    get_registry(fd);
+    int registry_object_id = object_id + 1;
 
-    bind_registry(fd);
+    // get_registry(fd, registry_object_id);
+
+    int wl_comp_obj_id = object_id + 2;
+    bind_registry(fd, 3, "wl_compositor", 6, wl_comp_obj_id);
+
+    u32 create_surface_obj_id = object_id + 3;
+    send_packet(fd, wl_comp_obj_id, 0, create_surface_obj_id);
 
     return 0;
 }
@@ -96,12 +104,14 @@ int socket_connect() {
         perror("connect");
         close(fd);
         return 1;
+    } else {
+        printf("connected to WAYLAND_SOCKET!\n");
     }
 
     return fd;
 }
 
-void get_registry(int fd) {
+void get_registry(int fd, int new_id) {
 
     /*
         object_id = 1
@@ -113,7 +123,7 @@ void get_registry(int fd) {
 
     packet[0] = 1;
     packet[1] = (12 << 16) | 1;
-    packet[2] = 2;
+    packet[2] = new_id;
 
     write(fd, packet, sizeof(packet));
 
@@ -166,51 +176,66 @@ void get_registry(int fd) {
     free(buffer);
 }
 
-void bind_registry(int fd) {
-    void *packet_pointer = malloc(4096);
-    void *new_ptr = packet_pointer;
+void bind_registry(int fd, u32 global_name, char *interface, u32 version, u32 new_id) {
+    void *buf_ptr = calloc(1, 4096);
+    void *mv_ptr = buf_ptr;
 
     u32 object_id = 2;
 
-    memcpy(new_ptr, &object_id, sizeof(u32));
-    new_ptr += sizeof(u32);
+    // first 4 bytes OBJECT_ID
+    memcpy(mv_ptr, &object_id, sizeof(u32));
+    mv_ptr += sizeof(u32);
 
-    u16 opcode = 0;
-    memcpy(new_ptr, &opcode, sizeof(u16));
-    new_ptr += sizeof(u16);
+    void *msg_size_ptr = mv_ptr;
+    mv_ptr += sizeof(u32);
 
-    void *msg_size_ptr = new_ptr;
-    new_ptr += sizeof(u16);
+    memcpy(mv_ptr, &global_name, sizeof(u32));
+    mv_ptr += sizeof(u32);
 
-    u32 global_name = 5;
-    memcpy(new_ptr, &global_name, sizeof(u32));
-    new_ptr += sizeof(u32);
+    int str_size = strlen(interface) + 1;
 
-    char *str = "wl_shm";
-    int str_size = strlen(str) + 1;
+    memcpy(mv_ptr, &str_size, sizeof(u32));
+    mv_ptr += sizeof(u32);
 
-    memcpy(new_ptr, &str_size, sizeof(u32));
-    new_ptr += sizeof(u32);
-
-    memcpy(new_ptr, str, str_size);
-    new_ptr += str_size;
+    memcpy(mv_ptr, interface, str_size);
+    mv_ptr += str_size;
 
     u32 padding = round_4(str_size) - str_size;
-    new_ptr += padding;
+    mv_ptr += padding;
 
-    u32 version = 2;
-    memcpy(new_ptr, &version, sizeof(u32));
-    new_ptr += sizeof(u32);
+    memcpy(mv_ptr, &version, sizeof(u32));
+    mv_ptr += sizeof(u32);
 
-    u32 new_object_id = 3;
-    memcpy(new_ptr, &new_object_id, sizeof(u32));
-    new_ptr += sizeof(u32);
+    memcpy(mv_ptr, &new_id, sizeof(u32));
+    mv_ptr += sizeof(u32);
 
-    u16 msg_size = (char *)new_ptr - (char *)packet_pointer;
+    u16 msg_size = ((char *)mv_ptr - (char *)buf_ptr) << 16 | 0;
 
     memcpy(msg_size_ptr, &msg_size, sizeof(u16));
 
-    write(fd, packet_pointer, msg_size);
+    write(fd, buf_ptr, msg_size);
 
-    free(packet_pointer);
+    free(buf_ptr);
+}
+
+void send_packet(int fd, u32 object_id, u16 opcode, u32 new_id) {
+    void *packet_ptr = calloc(4, 3);
+    void *mv_ptr = packet_ptr;
+
+    memcpy(mv_ptr, &object_id, sizeof(u32));
+    mv_ptr += sizeof(u32);
+
+    u32 opcode_msg_size;
+    void *opcode_msg_size_ptr = mv_ptr;
+    mv_ptr += sizeof(u32);
+
+    u32 create_surface_obj_id = new_id;
+    memcpy(mv_ptr, &create_surface_obj_id, sizeof(u32));
+    mv_ptr += sizeof(u32);
+
+    u16 msg_size = mv_ptr - packet_ptr;
+
+    *(u32 *)opcode_msg_size_ptr = (msg_size << 16) | 0;
+
+    printf("request sent for object_id: %d,opcode: %d\n", object_id, opcode);
 }
