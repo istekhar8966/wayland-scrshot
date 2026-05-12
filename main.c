@@ -26,11 +26,45 @@ typedef int64_t i64;
 typedef float f32;
 typedef double f64;
 
-int a_round(int x) {
+int round_4(int x);
+int create_shm_buf();
+int socket_connect();
+void get_registry(int fd);
+void bind_registry(int fd);
+
+int main(void) {
+
+    int fd = socket_connect();
+
+    get_registry(fd);
+
+    bind_registry(fd);
+
+    return 0;
+}
+
+int round_4(int x) {
     return (x + 3) & ~3;
 }
 
-int main(void) {
+int create_shm_buf() {
+    int mem_fd = memfd_create("memfd_buffer", 0);
+    int fd_buf_size = 1920 * 1080 * 4;
+
+    ftruncate(mem_fd, fd_buf_size);
+
+    void *pixels = mmap(NULL, fd_buf_size, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, 0);
+
+    if (pixels == MAP_FAILED) {
+        perror("mmap Failed!");
+        exit(1);
+    }
+
+    return mem_fd;
+}
+
+int socket_connect() {
+
     int fd;
 
     char sock_path[256];
@@ -63,6 +97,11 @@ int main(void) {
         close(fd);
         return 1;
     }
+
+    return fd;
+}
+
+void get_registry(int fd) {
 
     /*
         object_id = 1
@@ -116,7 +155,7 @@ int main(void) {
         }
         printf(",");
 
-        buf_ptr += a_round(str_size);
+        buf_ptr += round_4(str_size);
 
         printf("v%u", *(u32 *)buf_ptr);
         buf_ptr += sizeof(u32);
@@ -125,33 +164,9 @@ int main(void) {
     }
 
     free(buffer);
+}
 
-    int mem_fd = memfd_create("memfd_buffer", 0);
-    int fd_buf_size = 1920 * 1080 * 4;
-
-    ftruncate(mem_fd, fd_buf_size);
-
-    void *pixels = mmap(NULL, fd_buf_size, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, 0);
-
-    if (pixels == MAP_FAILED) {
-        perror("mmap Failed!");
-        exit(1);
-    }
-
-    /*
-    packet_format!
-     *
-    [object_id] = 2
-    [opcode/size] = (size << 16) | opcode
-    [global_name]
-    [string_length]
-    [string bytes]
-    [padding]
-    [version]
-    [new_object_id]
-    *
-    */
-
+void bind_registry(int fd) {
     void *packet_pointer = malloc(4096);
     void *new_ptr = packet_pointer;
 
@@ -180,7 +195,7 @@ int main(void) {
     memcpy(new_ptr, str, str_size);
     new_ptr += str_size;
 
-    u32 padding = a_round(str_size) - str_size;
+    u32 padding = round_4(str_size) - str_size;
     new_ptr += padding;
 
     u32 version = 2;
@@ -198,6 +213,4 @@ int main(void) {
     write(fd, packet_pointer, msg_size);
 
     free(packet_pointer);
-
-    return 0;
 }
