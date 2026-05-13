@@ -178,6 +178,9 @@ void get_registry(int fd, int new_id) {
 
 void bind_registry(int fd, u32 global_name, char *interface, u32 version, u32 new_id) {
     void *buf_ptr = calloc(1, 4096);
+    if (buf_ptr == NULL) {
+        perror("calloc: memory allocation failed");
+    }
     void *mv_ptr = buf_ptr;
 
     u32 object_id = 2;
@@ -209,11 +212,15 @@ void bind_registry(int fd, u32 global_name, char *interface, u32 version, u32 ne
     memcpy(mv_ptr, &new_id, sizeof(u32));
     mv_ptr += sizeof(u32);
 
-    u16 msg_size = ((char *)mv_ptr - (char *)buf_ptr) << 16 | 0;
+    u16 msg_size = ((char *)mv_ptr - (char *)buf_ptr);
+    u32 opcode_msg_size = (msg_size << 16) | 0;
+    memcpy(msg_size_ptr, &opcode_msg_size, sizeof(u32));
 
-    memcpy(msg_size_ptr, &msg_size, sizeof(u16));
-
-    write(fd, buf_ptr, msg_size);
+    if (write(fd, buf_ptr, msg_size) == -1) {
+        perror("write");
+    } else {
+        printf("bind registry succes!\n");
+    }
 
     free(buf_ptr);
 }
@@ -233,9 +240,13 @@ void send_packet(int fd, u32 object_id, u16 opcode, u32 new_id) {
     memcpy(mv_ptr, &create_surface_obj_id, sizeof(u32));
     mv_ptr += sizeof(u32);
 
-    u16 msg_size = mv_ptr - packet_ptr;
+    u16 msg_size = (char *)mv_ptr - (char *)packet_ptr;
 
     *(u32 *)opcode_msg_size_ptr = (msg_size << 16) | 0;
 
-    printf("request sent for object_id: %d,opcode: %d\n", object_id, opcode);
+    if (write(fd, packet_ptr, msg_size) == -1) {
+        perror("write");
+    } else {
+        printf("request sent for object_id: %d,opcode: %d\n", object_id, opcode);
+    }
 }
