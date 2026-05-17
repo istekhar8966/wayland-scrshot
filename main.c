@@ -26,27 +26,43 @@ typedef int64_t i64;
 typedef float f32;
 typedef double f64;
 
+typedef struct {
+    int mem_fd;
+    int shm_buf_size;
+} shm_buf;
+
 int round_4(int x);
-int create_shm_buf();
+shm_buf create_shm_buf();
 int socket_connect();
 void get_registry(int fd, int new_id);
-void bind_registry(int fd, u32 global_name, char *interface, u32 version, u32 new_id);
+void bind_object(int fd, u32 registry_id, u32 global_name, char *interface, u32 version, u32 new_id);
 void send_packet(int fd, u32 object_id, u16 opcode, u32 new_id);
 
 int main(void) {
-    int object_id = 1;
-
+    // connect to the wayland socket.
     int fd = socket_connect();
 
-    int registry_object_id = object_id + 1;
+    int registry_object_id = 2;
 
-    // get_registry(fd, registry_object_id);
+    // get_registry
+    get_registry(fd, registry_object_id);
 
-    int wl_comp_obj_id = object_id + 2;
-    bind_registry(fd, 3, "wl_compositor", 6, wl_comp_obj_id);
+    int wl_comp_obj_id = 3;
+    // bind wl_compositor
+    bind_object(fd, 3, registry_object_id, "wl_compositor", 6, wl_comp_obj_id);
 
-    u32 create_surface_obj_id = object_id + 3;
+    u32 create_surface_obj_id = 4;
     send_packet(fd, wl_comp_obj_id, 0, create_surface_obj_id);
+
+    u32 wl_shm_obj_id = 5;
+    bind_object(fd, 5, registry_object_id, "wl_shm", 2, wl_comp_obj_id);
+
+    shm_buf result = create_shm_buf();
+
+    int mem_fd = result.mem_fd;
+    int shm_buf_size = result.shm_buf_size;
+
+    ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags);
 
     return 0;
 }
@@ -55,20 +71,34 @@ int round_4(int x) {
     return (x + 3) & ~3;
 }
 
-int create_shm_buf() {
+shm_buf create_shm_buf() {
     int mem_fd = memfd_create("memfd_buffer", 0);
-    int fd_buf_size = 1920 * 1080 * 4;
+    if (mem_fd == -1) {
+        perror("mem_fd create failed!");
+    }
 
-    ftruncate(mem_fd, fd_buf_size);
+    int buf_size = 1920 * 1080 * 4;
 
-    void *pixels = mmap(NULL, fd_buf_size, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, 0);
+    ftruncate(mem_fd, buf_size);
+
+    void *pixels = mmap(NULL,
+                        buf_size,
+                        PROT_READ | PROT_WRITE,
+                        MAP_SHARED,
+                        mem_fd,
+                        0);
 
     if (pixels == MAP_FAILED) {
         perror("mmap Failed!");
         exit(1);
     }
 
-    return mem_fd;
+    shm_buf s = {
+        .mem_fd = mem_fd,
+        .shm_buf_size = buf_size,
+    };
+
+    return s;
 }
 
 int socket_connect() {
@@ -176,14 +206,14 @@ void get_registry(int fd, int new_id) {
     free(buffer);
 }
 
-void bind_registry(int fd, u32 global_name, char *interface, u32 version, u32 new_id) {
+void bind_object(int fd, u32 registry_id, u32 global_name, char *interface, u32 version, u32 new_id) {
     void *buf_ptr = calloc(1, 4096);
     if (buf_ptr == NULL) {
         perror("calloc: memory allocation failed");
     }
     void *mv_ptr = buf_ptr;
 
-    u32 object_id = 2;
+    u32 object_id = registry_id;
 
     // first 4 bytes OBJECT_ID
     memcpy(mv_ptr, &object_id, sizeof(u32));
@@ -219,7 +249,7 @@ void bind_registry(int fd, u32 global_name, char *interface, u32 version, u32 ne
     if (write(fd, buf_ptr, msg_size) == -1) {
         perror("write");
     } else {
-        printf("bind registry succes!\n");
+        printf("bind registry succes! for object: %s\n", interface);
     }
 
     free(buf_ptr);
