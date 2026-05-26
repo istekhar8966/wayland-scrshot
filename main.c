@@ -26,257 +26,160 @@ typedef int64_t i64;
 typedef float f32;
 typedef double f64;
 
-typedef struct {
-    int mem_fd;
-    int shm_buf_size;
-} shm_buf;
+#define ROUND_UP_4(x) (((x) + 3) & ~3)
 
-int round_4(int x);
-shm_buf create_shm_buf();
-int socket_connect();
-void get_registry(int fd, int new_id);
-void bind_object(int fd, u32 registry_id, u32 global_name, char *interface, u32 version, u32 new_id);
-void send_packet(int fd, u32 object_id, u16 opcode, u32 new_id);
+// wayland message format!
+// [4 bytes: object_id] [4 bytes: (size << 16 | opcode)] [arguments...]
 
-int main(void) {
-    // connect to the wayland socket.
-    int fd = socket_connect();
+int connect_to_wayland() {
+    char path[256];
+    const char *display = getenv("WAYLAND_DISPLAY");
+    const char *runtime = getenv("XDG_RUNTIME_DIR");
 
-    int registry_object_id = 2;
+    if (!display)
+        display = "wayland-0";
+    snprintf(path, sizeof(path), "%s/%s", runtime, display);
 
-    // get_registry
-    get_registry(fd, registry_object_id);
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    struct sockaddr_un addr = {.sun_family = AF_UNIX};
+    strcpy(addr.sun_path, path);
 
-    int wl_comp_obj_id = 3;
-    // bind wl_compositor
-    bind_object(fd, 3, registry_object_id, "wl_compositor", 6, wl_comp_obj_id);
-
-    u32 create_surface_obj_id = 4;
-    send_packet(fd, wl_comp_obj_id, 0, create_surface_obj_id);
-
-    u32 wl_shm_obj_id = 5;
-    bind_object(fd, 5, registry_object_id, "wl_shm", 2, wl_comp_obj_id);
-
-    shm_buf result = create_shm_buf();
-
-    int mem_fd = result.mem_fd;
-    int shm_buf_size = result.shm_buf_size;
-
-    ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags);
-
-    return 0;
-}
-
-int round_4(int x) {
-    return (x + 3) & ~3;
-}
-
-shm_buf create_shm_buf() {
-    int mem_fd = memfd_create("memfd_buffer", 0);
-    if (mem_fd == -1) {
-        perror("mem_fd create failed!");
-    }
-
-    int buf_size = 1920 * 1080 * 4;
-
-    ftruncate(mem_fd, buf_size);
-
-    void *pixels = mmap(NULL,
-                        buf_size,
-                        PROT_READ | PROT_WRITE,
-                        MAP_SHARED,
-                        mem_fd,
-                        0);
-
-    if (pixels == MAP_FAILED) {
-        perror("mmap Failed!");
-        exit(1);
-    }
-
-    shm_buf s = {
-        .mem_fd = mem_fd,
-        .shm_buf_size = buf_size,
-    };
-
-    return s;
-}
-
-int socket_connect() {
-
-    int fd;
-
-    char sock_path[256];
-
-    char *wayland_display;
-    char *runtime_dir;
-
-    wayland_display = getenv("WAYLAND_DISPLAY");
-    runtime_dir = getenv("XDG_RUNTIME_DIR");
-
-    snprintf(sock_path, sizeof(sock_path), "%s/%s", runtime_dir, wayland_display);
-
-    struct sockaddr_un addr;
-
-    fd = socket(AF_UNIX, SOCK_STREAM, 0);
-
-    if (fd == -1) {
-        perror("socket");
-        return 1;
-    }
-
-    memset(&addr, 0, sizeof(addr));
-
-    addr.sun_family = AF_UNIX;
-
-    strcpy(addr.sun_path, sock_path);
-
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
-        perror("connect");
-        close(fd);
-        return 1;
+    if ((connect(fd, (struct sockaddr *)&addr, sizeof(addr))) != 0) {
+        perror("wayland connection failed");
     } else {
-        printf("connected to WAYLAND_SOCKET!\n");
+        printf("Connected to socket: '%s'\n", path);
     }
 
     return fd;
 }
 
-void get_registry(int fd, int new_id) {
+void send_get_registry(int fd, u32 new_registry_id) {
+    u32 message[3] = {
+        1,
+        (12 << 16) | 1,
+        new_registry_id,
+    };
 
-    /*
-        object_id = 1
-        size/opcode = (12 << 16) | 1
-        new_id = 2
-    */
+    write(fd, message, sizeof(message));
+}
 
-    u32 packet[3] = {0};
+void write_wayland_message(
+    int fd,
+    u32 object_id,
+    u16 opcode,
+    const void *args,
+    u32 args_size) {
 
-    packet[0] = 1;
-    packet[1] = (12 << 16) | 1;
-    packet[2] = new_id;
+    // [4 bytes: object_id] [4 bytes: (size << 16 | opcode)] [arguments...]
 
-    write(fd, packet, sizeof(packet));
+    u32 total_size = 8 + args_size;
 
-    int buf_cap = 4096;
-    void *buffer = malloc(buf_cap);
-    void *buf_ptr = buffer;
+    void *message = malloc(total_size);
+    if (message == NULL) {
+        perror("malloc failed!");
+        return;
+    }
+    u8 *ptr = (u8 *)message;
 
-    int n = read(fd, (unsigned char *)buffer, buf_cap);
+    // Write header
+    *(u32 *)ptr = object_id;
+    ptr += sizeof(u32);
 
-    while (buf_ptr < buffer + n) {
-        int object_id = *(u32 *)buf_ptr;
-        buf_ptr += sizeof(u32);
+    // size + opecode  (size << 16 | opcode)
+    *(u32 *)ptr = (total_size << 16 | opcode);
+    ptr += sizeof(u32);
 
-        int opcode = *(u16 *)buf_ptr;
-        buf_ptr += sizeof(u16);
+    // Write args
+    if (args_size > 0 && args != NULL) {
+        memcpy(ptr, args, args_size);
+    }
 
-        int msg_size = *(u16 *)buf_ptr;
-        buf_ptr += sizeof(u16);
+    // Write
+    int n = write(fd, message, total_size);
+    if (n == -1) {
+        perror("write failed");
+    }
 
-        // printf("object_id: %u\n", object_id);
-        // printf("opcode: %u\n", opcode);
-        // printf("payload_size: %u\n", msg_size);
+    if (object_id == 1 && opcode == 2) {
+        printf("Sent get_registry request...\n");
+    }
 
-        int name = *(u32 *)buf_ptr;
-        buf_ptr += sizeof(u32);
+    free(message);
+}
 
-        int str_size = *(u32 *)buf_ptr;
-        buf_ptr += sizeof(u32);
+void process_event(u8 **ptr, u8 *end) {
+    // header
+    u32 object_id = *(u32 *)*ptr;
+    *ptr += sizeof(u32);
+    u32 size_opcode = *(u32 *)*ptr;
+    *ptr += sizeof(u32);
 
-        printf("Global: ");
-        printf("%d", name);
-        printf(",");
+    u16 size = size_opcode >> 16;
+    u16 opcode = size_opcode & 0xFFFF;
 
-        char *str_ptr = buf_ptr;
+    printf("[Event] object=%u, opcode=%u, size=%u\n", object_id, opcode, size);
 
-        for (int i = 0; i < str_size; i++) {
-            printf("%c", *str_ptr);
-            str_ptr += 1;
+    if (opcode == 0) {
+        u32 name = *(u32 *)*ptr;
+        *ptr += sizeof(u32);
+
+        u32 len = *(u32 *)*ptr;
+        *ptr += sizeof(u32);
+
+        printf("    -> Global name=%u", name);
+
+        printf(", interface='");
+        for (int i = 0; i < len && (*ptr + 1) < end; i++) {
+            if (*ptr[i] > 33 && *ptr[i] < 127) {
+                printf("%c", *ptr[i]);
+            }
         }
-        printf(",");
+        printf("'");
 
-        buf_ptr += round_4(str_size);
-
-        printf("v%u", *(u32 *)buf_ptr);
-        buf_ptr += sizeof(u32);
-
-        printf("\n");
+        *ptr += ROUND_UP_4(len);
+        u32 version = *(u32 *)*ptr;
+        *ptr += sizeof(u32);
+        printf(", version=%u\n", version);
     }
-
-    free(buffer);
 }
 
-void bind_object(int fd, u32 registry_id, u32 global_name, char *interface, u32 version, u32 new_id) {
-    void *buf_ptr = calloc(1, 4096);
-    if (buf_ptr == NULL) {
-        perror("calloc: memory allocation failed");
-    }
-    void *mv_ptr = buf_ptr;
+void print_buffer(const void *buf, size_t len) {
+    const unsigned char *p = buf;
 
-    u32 object_id = registry_id;
+    for (size_t i = 0; i < len; i++) {
 
-    // first 4 bytes OBJECT_ID
-    memcpy(mv_ptr, &object_id, sizeof(u32));
-    mv_ptr += sizeof(u32);
-
-    void *msg_size_ptr = mv_ptr;
-    mv_ptr += sizeof(u32);
-
-    memcpy(mv_ptr, &global_name, sizeof(u32));
-    mv_ptr += sizeof(u32);
-
-    int str_size = strlen(interface) + 1;
-
-    memcpy(mv_ptr, &str_size, sizeof(u32));
-    mv_ptr += sizeof(u32);
-
-    memcpy(mv_ptr, interface, str_size);
-    mv_ptr += str_size;
-
-    u32 padding = round_4(str_size) - str_size;
-    mv_ptr += padding;
-
-    memcpy(mv_ptr, &version, sizeof(u32));
-    mv_ptr += sizeof(u32);
-
-    memcpy(mv_ptr, &new_id, sizeof(u32));
-    mv_ptr += sizeof(u32);
-
-    u16 msg_size = ((char *)mv_ptr - (char *)buf_ptr);
-    u32 opcode_msg_size = (msg_size << 16) | 0;
-    memcpy(msg_size_ptr, &opcode_msg_size, sizeof(u32));
-
-    if (write(fd, buf_ptr, msg_size) == -1) {
-        perror("write");
-    } else {
-        printf("bind registry succes! for object: %s\n", interface);
+        if (p[i] >= 32 && p[i] < 127) {
+            printf("%c", p[i]);
+        } else {
+            printf(".");
+        }
     }
 
-    free(buf_ptr);
+    printf("\n");
 }
 
-void send_packet(int fd, u32 object_id, u16 opcode, u32 new_id) {
-    void *packet_ptr = calloc(4, 3);
-    void *mv_ptr = packet_ptr;
+void read_and_process_events(int fd) {
+    u8 buffer[4096];
+    size_t n = read(fd, buffer, 500 * sizeof(u32));
 
-    memcpy(mv_ptr, &object_id, sizeof(u32));
-    mv_ptr += sizeof(u32);
+    if (n <= 0)
+        return;
 
-    u32 opcode_msg_size;
-    void *opcode_msg_size_ptr = mv_ptr;
-    mv_ptr += sizeof(u32);
+    u8 *ptr = buffer;
+    u8 *end = buffer + n;
 
-    u32 create_surface_obj_id = new_id;
-    memcpy(mv_ptr, &create_surface_obj_id, sizeof(u32));
-    mv_ptr += sizeof(u32);
-
-    u16 msg_size = (char *)mv_ptr - (char *)packet_ptr;
-
-    *(u32 *)opcode_msg_size_ptr = (msg_size << 16) | 0;
-
-    if (write(fd, packet_ptr, msg_size) == -1) {
-        perror("write");
-    } else {
-        printf("request sent for object_id: %d,opcode: %d\n", object_id, opcode);
+    while (ptr + 8 <= end) {
+        process_event(&ptr, end);
     }
+}
+
+int main() {
+    int fd = connect_to_wayland();
+
+    u32 args[1] = {2};
+    write_wayland_message(fd, 1, 2, &args, sizeof(args));
+
+    read_and_process_events(fd);
+
+    close(fd);
 }
