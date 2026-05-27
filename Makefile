@@ -1,8 +1,14 @@
+CC = gcc
+CFLAGS = -Wall -Wextra -Werror
+
+TARGET = main
+SRC = main.c
+
 all:
-	gcc main.c -o main
+	$(CC) $(SRC) -o $(TARGET) $(CFLAGS)
+
+run: all
+	./$(TARGET)
 
 clean:
-	rm -rf main
-
-run:
-	gcc main.c -o main && ./main
+	rm -f $(TARGET)
