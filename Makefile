@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -Werror
 
 TARGET = main
-SRC = main.c
+SRC = main.c wayland.c protocol.c
 
 all:
 	$(CC) $(SRC) -o $(TARGET) $(CFLAGS)
